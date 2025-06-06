@@ -1,0 +1,13 @@
+{
+  "username": "homelab",
+  "enable_developer_mode": true,
+  "enable_tailscale": true,
+  "tailscale_key": "tskey-auth-xxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "zfs_enabled": true,
+  "smb_enabled": true,
+  "smb_username": "homelab",
+  "smb_password": "homelab123",
+  "stacks": ["media", "audio", "books"],
+  "jellyfin_password": "homelab123",
+  "calibre_password": "homelab123"
+}

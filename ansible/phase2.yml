@@ -1,0 +1,116 @@
+# ansible/phase2.yml - Infrastructure and Applications via Ansible
+---
+- name: Phase 2 - Infrastructure and Applications
+  hosts: localhost
+  connection: local
+  become: yes
+  vars:
+    config_file: "config.json"
+    pool_name: "homelab-drive"
+  
+  tasks:
+    - name: Load configuration
+      include_vars:
+        file: "{{ config_file }}"
+        name: config
+
+    - name: Display Phase 2 start
+      debug:
+        msg: "Starting Phase 2 for user {{ config.username }}"
+
+    # ===== ZFS SETUP =====
+    - name: Setup ZFS storage
+      include_tasks: tasks/zfs.yml
+      when: config.zfs_enabled | default(false) | bool
+      tags: zfs
+
+    - name: Set storage path based on ZFS availability
+      set_fact:
+        storage_path: "{{ '/homelab-drive' if zfs_pool_created | default(false) else '/var/home/' + config.username + '/homelab-storage' }}"
+
+    - name: Create fallback storage structure if no ZFS
+      file:
+        path: "{{ storage_path }}/media/{{ item }}"
+        state: directory
+        owner: "1000"
+        group: "1000"
+        mode: '0755'
+      loop:
+        - books
+        - comics
+        - movies
+        - shows
+        - xxx
+        - audiobooks
+        - webvids
+        - music
+        - downloads/incomplete
+        - downloads/complete
+      when: not (zfs_pool_created | default(false))
+
+    # ===== DOCKER INFRASTRUCTURE =====
+    - name: Setup Docker infrastructure
+      include_tasks: tasks/docker.yml
+      tags: docker
+
+    # ===== SAMBA SETUP =====
+    - name: Setup SAMBA file sharing
+      include_tasks: tasks/samba.yml
+      when: config.smb_enabled | default(false) | bool
+      tags: samba
+
+    # ===== DOCKGE STACK MANAGER =====
+    - name: Setup Dockge stack manager
+      include_tasks: tasks/dockge.yml
+      tags: dockge
+
+    # ===== CREATE APPLICATION STACKS =====
+    - name: Create media application stacks
+      include_tasks: tasks/stacks.yml
+      when: config.stacks is defined and config.stacks | length > 0
+      tags: stacks
+
+    # ===== APPLICATION CONFIGURATION =====
+    - name: Wait for applications to start
+      pause:
+        seconds: 30
+      when: config.stacks is defined and config.stacks | length > 0
+
+    - name: Configure applications
+      include_tasks: tasks/configure_apps.yml
+      when: config.stacks is defined and config.stacks | length > 0
+      tags: apps
+
+    # ===== PHASE COMPLETION =====
+    - name: Mark Phase 2 as complete
+      copy:
+        content: "phase2_complete"
+        dest: "/var/home/{{ config.username }}/.config/homelab/current-phase"
+        owner: "{{ config.username }}"
+        group: "{{ config.username }}"
+
+    - name: Disable Phase 2 service
+      systemd:
+        name: homelab-phase2.service
+        enabled: no
+        scope: user
+      become_user: "{{ config.username }}"
+      environment:
+        XDG_RUNTIME_DIR: "/run/user/1000"
+
+    - name: Display completion status
+      debug:
+        msg: |
+          🎉 Homelab setup complete!
+          
+          ✓ Storage: {{ storage_path }}
+          ✓ SAMBA: {{ 'enabled' if config.smb_enabled | default(false) else 'disabled' }}
+          ✓ ZFS: {{ 'enabled with snapshots' if zfs_pool_created | default(false) else 'disabled' }}
+          ✓ Dockge UI: http://{{ ansible_default_ipv4.address }}:5001
+          
+          Next steps:
+          1. Visit Dockge to start your media stacks
+          2. Configure applications through their web interfaces
+          3. Add media to {{ storage_path }}/media/
+          
+          Enjoy your automated homelab!

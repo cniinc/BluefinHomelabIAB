@@ -1,0 +1,79 @@
+# ansible/tasks/dockge.yml - Dockge stack manager setup
+---
+- name: Create Dockge directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ config.username }}"
+    group: "{{ config.username }}"
+    mode: '0755'
+  loop:
+    - "/var/home/{{ config.username }}/.local/share/dockge"
+    - "{{ storage_path }}/dockge/data"
+    - "{{ storage_path }}/dockge/stacks"
+
+- name: Stop existing Dockge container
+  docker_container:
+    name: dockge
+    state: absent
+  ignore_errors: yes
+  become_user: "{{ config.username }}"
+
+- name: Create Dockge Docker Compose file
+  copy:
+    dest: "/var/home/{{ config.username }}/.local/share/dockge/compose.yml"
+    owner: "{{ config.username }}"
+    group: "{{ config.username }}"
+    content: |
+      version: '3.8'
+      services:
+        dockge:
+          image: louislam/dockge:1
+          container_name: dockge
+          restart: unless-stopped
+          ports:
+            - 5001:5001
+          volumes:
+            - /var/run/docker.sock:/var/run/docker.sock
+            - {{ storage_path }}/dockge/data:/app/data
+            - {{ storage_path }}/dockge/stacks:/opt/stacks
+          environment:
+            - DOCKGE_STACKS_DIR=/opt/stacks
+          networks:
+            - homelab-management
+            
+      networks:
+        homelab-management:
+          external: true
+
+- name: Start Dockge container
+  docker_compose:
+    project_src: "/var/home/{{ config.username }}/.local/share/dockge"
+    state: present
+  become_user: "{{ config.username }}"
+
+- name: Wait for Dockge to be ready
+  wait_for:
+    port: 5001
+    timeout: 120
+
+- name: Check if Dockge is responding
+  uri:
+    url: "http://{{ ansible_default_ipv4.address }}:5001"
+    method: GET
+    status_code: 200
+  register: dockge_health
+  until: dockge_health.status == 200
+  retries: 30
+  delay: 5
+
+- name: Display Dockge info
+  debug:
+    msg: |
+      Dockge stack manager ready:
+      
+      ✓ URL: http://{{ ansible_default_ipv4.address }}:5001
+      ✓ Stacks directory: {{ storage_path }}/dockge/stacks
+      ✓ Data directory: {{ storage_path }}/dockge/data
+      
+      Use Dockge to manage your application stacks!
