@@ -1,0 +1,110 @@
+# ansible/tasks/zfs_snapshots.yml - ZFS snapshot automation
+---
+- name: Create ZFS snapshot management directory
+  file:
+    path: "/var/home/{{ config.username }}/.local/bin"
+    state: directory
+    owner: "{{ config.username }}"
+    group: "{{ config.username }}"
+    mode: '0755'
+
+- name: Create ZFS snapshot script
+  copy:
+    dest: "/var/home/{{ config.username }}/.local/bin/zfs-snapshot.sh"
+    owner: "{{ config.username }}"
+    group: "{{ config.username }}"
+    mode: '0755'
+    content: |
+      #!/bin/bash
+      # ZFS Snapshot Management Script for Media Hub
+      
+      POOL_NAME="{{ pool_name }}"
+      DATE=$(date +%Y%m%d-%H%M%S)
+      
+      echo "Creating ZFS snapshots for media protection..."
+      
+      # Create snapshots of main datasets
+      sudo zfs snapshot "${POOL_NAME}/shared@auto-${DATE}" || echo "Failed to snapshot shared"
+      sudo zfs snapshot "${POOL_NAME}/media@auto-${DATE}" || echo "Failed to snapshot media"
+      
+      # Keep only last 7 daily snapshots for each dataset
+      echo "Cleaning up old snapshots..."
+      for dataset in "shared" "media"; do
+          echo "Processing ${dataset} snapshots..."
+          
+          # Get snapshots older than the 7 most recent
+          SNAPSHOTS_TO_DELETE=$(sudo zfs list -t snapshot -o name -s creation -H | \
+                               grep "${POOL_NAME}/${dataset}@auto-" | \
+                               head -n -7)
+          
+          if [[ -n "$SNAPSHOTS_TO_DELETE" ]]; then
+              echo "Cleaning up old ${dataset} snapshots:"
+              echo "$SNAPSHOTS_TO_DELETE" | while IFS= read -r snapshot; do
+                  if [[ -n "$snapshot" ]]; then
+                      echo "Destroying: $snapshot"
+                      sudo zfs destroy "$snapshot" || echo "Failed to destroy $snapshot"
+                  fi
+              done
+          else
+              echo "No old ${dataset} snapshots to clean up"
+          fi
+      done
+      
+      echo "ZFS snapshots completed: auto-${DATE}"
+      
+      # Display current snapshots
+      echo "Current snapshots:"
+      sudo zfs list -t snapshot | grep "${POOL_NAME}"
+
+- name: Create ZFS snapshot systemd service
+  copy:
+    dest: "/var/home/{{ config.username }}/.config/systemd/user/zfs-snapshot.service"
+    owner: "{{ config.username }}"
+    group: "{{ config.username }}"
+    content: |
+      [Unit]
+      Description=ZFS Automatic Snapshots for Media Protection
+      After=multi-user.target
+      
+      [Service]
+      Type=oneshot
+      ExecStart=%h/.local/bin/zfs-snapshot.sh
+      StandardOutput=journal
+      StandardError=journal
+      TimeoutStartSec=600
+
+- name: Create ZFS snapshot timer
+  copy:
+    dest: "/var/home/{{ config.username }}/.config/systemd/user/zfs-snapshot.timer"
+    owner: "{{ config.username }}"
+    group: "{{ config.username }}"
+    content: |
+      [Unit]
+      Description=Daily ZFS Snapshots for Media Hub
+      Requires=zfs-snapshot.service
+      
+      [Timer]
+      OnCalendar=daily
+      Persistent=true
+      RandomizedDelaySec=30m
+      
+      [Install]
+      WantedBy=timers.target
+
+- name: Enable ZFS snapshot timer
+  systemd:
+    name: zfs-snapshot.timer
+    enabled: yes
+    state: started
+    scope: user
+  become_user: "{{ config.username }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/1000"
+
+- name: Display ZFS snapshot info
+  debug:
+    msg: |
+      ZFS snapshot automation configured:
+      ✓ Daily snapshots enabled
+      ✓ Keeping 7 days of snapshots
+      ✓ Script: ~/.local/bin/zfs-snapshot.sh

@@ -1,0 +1,89 @@
+# ansible/tasks/docker.yml - Docker setup and management (Bluefin-compatible)
+---
+- name: Ensure Docker is running
+  systemd:
+    name: docker
+    enabled: yes
+    state: started
+
+- name: Wait for Docker socket to be available
+  wait_for:
+    path: /var/run/docker.sock
+    timeout: 60
+
+- name: Verify Docker is working
+  command: docker info
+  register: docker_status
+  changed_when: false
+  failed_when: false
+
+- name: Display Docker status
+  debug:
+    msg: "Docker is {{ 'running' if docker_status.rc == 0 else 'not working' }}"
+
+- name: Fail if Docker is not working
+  fail:
+    msg: "Docker is not working properly. Check if you're running bluefin-dx."
+  when: docker_status.rc != 0
+
+- name: Create Docker directories in user space
+  file:
+    path: "/var/home/{{ config.username }}/.local/share/{{ item }}"
+    state: directory
+    owner: "{{ config.username }}"
+    group: "{{ config.username }}"
+    mode: '0755'
+  loop:
+    - containers
+    - dockge
+
+- name: Create Docker networks for application isolation
+  docker_network:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - homelab-media
+    - homelab-audio
+    - homelab-books
+    - homelab-management
+  become_user: "{{ config.username }}"
+
+- name: Create Docker management systemd service
+  copy:
+    dest: "/var/home/{{ config.username }}/.config/systemd/user/homelab-docker.service"
+    owner: "{{ config.username }}"
+    group: "{{ config.username }}"
+    content: |
+      [Unit]
+      Description=Homelab Docker Containers
+      After=docker.service network-online.target
+      Requires=docker.service
+      Wants=network-online.target
+      
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/bin/bash -c 'cd $HOME/.local/share/dockge && docker compose up -d'
+      ExecStop=/bin/bash -c 'cd $HOME/.local/share/dockge && docker compose down'
+      TimeoutStartSec=300
+      
+      [Install]
+      WantedBy=default.target
+
+- name: Enable Docker management service
+  systemd:
+    name: homelab-docker.service
+    enabled: yes
+    scope: user
+  become_user: "{{ config.username }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/1000"
+
+- name: Display Docker setup completion
+  debug:
+    msg: |
+      Docker infrastructure ready:
+      ✓ Docker service running
+      ✓ User directories created
+      ✓ Container networks configured
+      ✓ Management service enabled

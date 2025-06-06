@@ -1,0 +1,82 @@
+# ansible/tasks/samba.yml - SAMBA container setup
+---
+- name: Create SAMBA container directory
+  file:
+    path: "/var/home/{{ config.username }}/.local/share/containers/samba"
+    state: directory
+    owner: "{{ config.username }}"
+    group: "{{ config.username }}"
+    mode: '0755'
+
+- name: Stop existing SAMBA container
+  docker_container:
+    name: homelab-samba
+    state: absent
+  ignore_errors: yes
+  become_user: "{{ config.username }}"
+
+- name: Create SAMBA Docker Compose file with improved security
+  copy:
+    dest: "/var/home/{{ config.username }}/.local/share/containers/samba/compose.yml"
+    owner: "{{ config.username }}"
+    group: "{{ config.username }}"
+    content: |
+      version: '3.8'
+      services:
+        samba:
+          image: dperson/samba:latest
+          container_name: homelab-samba
+          restart: unless-stopped
+          ports:
+            - "445:445"
+            - "139:139"
+            - "137:137/udp"
+            - "138:138/udp"
+          volumes:
+            - {{ storage_path }}:/shared:rw
+          environment:
+            - USERID=1000
+            - GROUPID=1000
+            - TZ=America/New_York
+            - WORKGROUP=HOMELAB
+          command: >
+            -u "{{ config.smb_username | default('homelab') }};{{ config.smb_password | default('homelab123') }};1000;1000;Homelab User;/shared"
+            -s "homelab-drive;/shared;yes;no;yes;{{ config.smb_username | default('homelab') }};{{ config.smb_username | default('homelab') }};Full access to homelab drive"
+            -s "media;/shared/media;yes;no;yes;{{ config.smb_username | default('homelab') }};{{ config.smb_username | default('homelab') }};Media files"
+            -p
+          networks:
+            - homelab-management
+          cap_add:
+            - NET_ADMIN
+          
+      networks:
+        homelab-management:
+          external: true
+
+- name: Start SAMBA container
+  docker_compose:
+    project_src: "/var/home/{{ config.username }}/.local/share/containers/samba"
+    state: present
+  become_user: "{{ config.username }}"
+
+- name: Wait for SAMBA to be ready
+  wait_for:
+    port: 445
+    timeout: 60
+
+- name: Display SAMBA connection info
+  debug:
+    msg: |
+      SAMBA shares configured:
+      
+      Network paths:
+      \\{{ ansible_default_ipv4.address }}\homelab-drive (full access)
+      \\{{ ansible_default_ipv4.address }}\media (media only)
+      
+      Credentials:
+      Username: {{ config.smb_username | default('homelab') }}
+      Password: {{ config.smb_password | default('homelab123') }}
+      
+      Local paths:
+      {{ storage_path }} -> homelab-drive
+      {{ storage_path }}/media -> media

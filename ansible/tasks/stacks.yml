@@ -1,0 +1,348 @@
+# ansible/tasks/stacks.yml - Create application stacks based on config
+---
+- name: Create media stack if requested
+  block:
+    - name: Create media stack directory
+      file:
+        path: "{{ storage_path }}/dockge/stacks/media-stack"
+        state: directory
+        owner: "{{ config.username }}"
+        group: "{{ config.username }}"
+        mode: '0755'
+
+    - name: Create media stack compose file
+      copy:
+        dest: "{{ storage_path }}/dockge/stacks/media-stack/compose.yml"
+        owner: "{{ config.username }}"
+        group: "{{ config.username }}"
+        content: |
+          version: '3.8'
+          
+          services:
+            jellyfin:
+              image: jellyfin/jellyfin:latest
+              container_name: jellyfin
+              restart: unless-stopped
+              ports:
+                - 8096:8096
+              volumes:
+                - ./jellyfin-config:/config
+                - ./jellyfin-cache:/cache
+                - {{ storage_path }}/media:/media:ro
+              environment:
+                - JELLYFIN_PublishedServerUrl=http://{{ ansible_default_ipv4.address }}:8096
+              user: "1000:1000"
+              networks:
+                - homelab-media
+          
+            deluge:
+              image: lscr.io/linuxserver/deluge:latest
+              container_name: deluge
+              restart: unless-stopped
+              ports:
+                - 8112:8112
+                - 6881:6881
+                - 6881:6881/udp
+              volumes:
+                - ./deluge-config:/config
+                - {{ storage_path }}/media/downloads:/downloads
+              environment:
+                - PUID=1000
+                - PGID=1000
+                - TZ=America/New_York
+              networks:
+                - homelab-media
+          
+            sonarr:
+              image: lscr.io/linuxserver/sonarr:latest
+              container_name: sonarr
+              restart: unless-stopped
+              ports:
+                - 8989:8989
+              volumes:
+                - ./sonarr-config:/config
+                - {{ storage_path }}/media/shows:/tv
+                - {{ storage_path }}/media/downloads:/downloads
+              environment:
+                - PUID=1000
+                - PGID=1000
+                - TZ=America/New_York
+              networks:
+                - homelab-media
+          
+            radarr:
+              image: lscr.io/linuxserver/radarr:latest
+              container_name: radarr
+              restart: unless-stopped
+              ports:
+                - 7878:7878
+              volumes:
+                - ./radarr-config:/config
+                - {{ storage_path }}/media/movies:/movies
+                - {{ storage_path }}/media/downloads:/downloads
+              environment:
+                - PUID=1000
+                - PGID=1000
+                - TZ=America/New_York
+              networks:
+                - homelab-media
+          
+            prowlarr:
+              image: lscr.io/linuxserver/prowlarr:latest
+              container_name: prowlarr
+              restart: unless-stopped
+              ports:
+                - 9696:9696
+              volumes:
+                - ./prowlarr-config:/config
+              environment:
+                - PUID=1000
+                - PGID=1000
+                - TZ=America/New_York
+              networks:
+                - homelab-media
+          
+            flaresolverr:
+              image: ghcr.io/flaresolverr/flaresolverr:latest
+              container_name: flaresolverr
+              restart: unless-stopped
+              ports:
+                - 8191:8191
+              environment:
+                - LOG_LEVEL=info
+              networks:
+                - homelab-media
+          
+            bazarr:
+              image: lscr.io/linuxserver/bazarr:latest
+              container_name: bazarr
+              restart: unless-stopped
+              ports:
+                - 6767:6767
+              volumes:
+                - ./bazarr-config:/config
+                - {{ storage_path }}/media/movies:/movies
+                - {{ storage_path }}/media/shows:/tv
+              environment:
+                - PUID=1000
+                - PGID=1000
+                - TZ=America/New_York
+              networks:
+                - homelab-media
+          
+            jellyseerr:
+              image: fallenbagel/jellyseerr:latest
+              container_name: jellyseerr
+              restart: unless-stopped
+              ports:
+                - 5055:5055
+              volumes:
+                - ./jellyseerr-config:/app/config
+              environment:
+                - LOG_LEVEL=debug
+                - TZ=America/New_York
+              networks:
+                - homelab-media
+          
+            filebot:
+              image: jlesage/filebot:latest
+              container_name: filebot
+              restart: unless-stopped
+              ports:
+                - 5800:5800
+              volumes:
+                - ./filebot-config:/config
+                - {{ storage_path }}/media:/storage
+                - {{ storage_path }}/media/downloads:/watch
+              environment:
+                - USER_ID=1000
+                - GROUP_ID=1000
+                - TZ=America/New_York
+              networks:
+                - homelab-media
+          
+          networks:
+            homelab-media:
+              external: true
+
+  when: config.stacks is defined and 'media' in config.stacks
+
+- name: Create audio stack if requested
+  block:
+    - name: Create audio stack directory
+      file:
+        path: "{{ storage_path }}/dockge/stacks/audio-stack"
+        state: directory
+        owner: "{{ config.username }}"
+        group: "{{ config.username }}"
+        mode: '0755'
+
+    - name: Create audio stack compose file
+      copy:
+        dest: "{{ storage_path }}/dockge/stacks/audio-stack/compose.yml"
+        owner: "{{ config.username }}"
+        group: "{{ config.username }}"
+        content: |
+          version: '3.8'
+          
+          services:
+            audiobookshelf:
+              image: ghcr.io/advplyr/audiobookshelf:latest
+              container_name: audiobookshelf
+              restart: unless-stopped
+              ports:
+                - 13378:80
+              volumes:
+                - ./audiobookshelf-config:/config
+                - ./audiobookshelf-metadata:/metadata
+                - {{ storage_path }}/media/audiobooks:/audiobooks
+                - {{ storage_path }}/media/books:/books
+              environment:
+                - AUDIOBOOKSHELF_UID=1000
+                - AUDIOBOOKSHELF_GID=1000
+              networks:
+                - homelab-audio
+          
+            lidarr:
+              image: lscr.io/linuxserver/lidarr:latest
+              container_name: lidarr
+              restart: unless-stopped
+              ports:
+                - 8686:8686
+              volumes:
+                - ./lidarr-config:/config
+                - {{ storage_path }}/media/music:/music
+                - {{ storage_path }}/media/downloads:/downloads
+              environment:
+                - PUID=1000
+                - PGID=1000
+                - TZ=America/New_York
+              networks:
+                - homelab-audio
+          
+            navidrome:
+              image: deluan/navidrome:latest
+              container_name: navidrome
+              restart: unless-stopped
+              ports:
+                - 4533:4533
+              volumes:
+                - ./navidrome-config:/data
+                - {{ storage_path }}/media/music:/music:ro
+              environment:
+                - ND_SCANSCHEDULE=1h
+                - ND_LOGLEVEL=info
+                - ND_SESSIONTIMEOUT=24h
+                - ND_BASEURL=""
+              networks:
+                - homelab-audio
+          
+          networks:
+            homelab-audio:
+              external: true
+
+  when: config.stacks is defined and 'audio' in config.stacks
+
+- name: Create book stack if requested
+  block:
+    - name: Create book stack directory
+      file:
+        path: "{{ storage_path }}/dockge/stacks/book-stack"
+        state: directory
+        owner: "{{ config.username }}"
+        group: "{{ config.username }}"
+        mode: '0755'
+
+    - name: Create book stack compose file
+      copy:
+        dest: "{{ storage_path }}/dockge/stacks/book-stack/compose.yml"
+        owner: "{{ config.username }}"
+        group: "{{ config.username }}"
+        content: |
+          version: '3.8'
+          
+          services:
+            readarr:
+              image: lscr.io/linuxserver/readarr:develop
+              container_name: readarr
+              restart: unless-stopped
+              ports:
+                - 8787:8787
+              volumes:
+                - ./readarr-config:/config
+                - {{ storage_path }}/media/books:/books
+                - {{ storage_path }}/media/downloads:/downloads
+              environment:
+                - PUID=1000
+                - PGID=1000
+                - TZ=America/New_York
+              networks:
+                - homelab-books
+          
+            mylar3:
+              image: lscr.io/linuxserver/mylar3:latest
+              container_name: mylar3
+              restart: unless-stopped
+              ports:
+                - 8090:8090
+              volumes:
+                - ./mylar3-config:/config
+                - {{ storage_path }}/media/comics:/comics
+                - {{ storage_path }}/media/downloads:/downloads
+              environment:
+                - PUID=1000
+                - PGID=1000
+                - TZ=America/New_York
+              networks:
+                - homelab-books
+          
+            calibre:
+              image: lscr.io/linuxserver/calibre:latest
+              container_name: calibre
+              restart: unless-stopped
+              ports:
+                - 8080:8080
+                - 8081:8081
+              volumes:
+                - ./calibre-config:/config
+                - {{ storage_path }}/media/books:/books
+              environment:
+                - PUID=1000
+                - PGID=1000
+                - TZ=America/New_York
+                - PASSWORD={{ config.calibre_password | default('homelab123') }}
+              networks:
+                - homelab-books
+          
+            calibre-web:
+              image: lscr.io/linuxserver/calibre-web:latest
+              container_name: calibre-web
+              restart: unless-stopped
+              ports:
+                - 8083:8083
+              volumes:
+                - ./calibre-web-config:/config
+                - {{ storage_path }}/media/books:/books
+              environment:
+                - PUID=1000
+                - PGID=1000
+                - TZ=America/New_York
+                - DOCKER_MODS=linuxserver/mods:universal-calibre
+              networks:
+                - homelab-books
+          
+          networks:
+            homelab-books:
+              external: true
+
+  when: config.stacks is defined and 'books' in config.stacks
+
+- name: Display stacks created
+  debug:
+    msg: |
+      Application stacks created:
+      {{ '✓ Media Stack: ' + storage_path + '/dockge/stacks/media-stack/' if (config.stacks is defined and 'media' in config.stacks) else '' }}
+      {{ '✓ Audio Stack: ' + storage_path + '/dockge/stacks/audio-stack/' if (config.stacks is defined and 'audio' in config.stacks) else '' }}
+      {{ '✓ Book Stack: ' + storage_path + '/dockge/stacks/book-stack/' if (config.stacks is defined and 'books' in config.stacks) else '' }}
+      
+      Use Dockge at http://{{ ansible_default_ipv4.address }}:5001 to manage them
