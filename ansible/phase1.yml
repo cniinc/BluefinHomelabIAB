@@ -1,0 +1,173 @@
+# ansible/phase1.yml - System configuration via Ansible (Bluefin-compatible)
+---
+- name: Phase 1 - System Configuration
+  hosts: localhost
+  connection: local
+  become: yes
+  vars:
+    config_file: "config.json"
+  
+  tasks:
+    - name: Load configuration
+      include_vars:
+        file: "{{ config_file }}"
+        name: config
+
+    - name: Display loaded configuration
+      debug:
+        msg: "Configuring system for user {{ config.username }}"
+
+    # ===== DEVELOPER MODE SETUP (Bluefin-specific) =====
+    - name: Check if developer mode is requested
+      set_fact:
+        needs_developer_mode: "{{ config.enable_developer_mode | default(false) | bool }}"
+
+    - name: Check current OSTree image
+      command: rpm-ostree status --json
+      register: ostree_status
+      changed_when: false
+
+    - name: Parse OSTree status
+      set_fact:
+        current_image: "{{ (ostree_status.stdout | from_json).deployments[0]['origin'] }}"
+
+    - name: Display current image
+      debug:
+        msg: "Current image: {{ current_image }}"
+
+    - name: Rebase to bluefin-dx if developer mode requested
+      command: rpm-ostree rebase ostree-unverified-registry:ghcr.io/ublue-os/bluefin-dx:gts
+      when: 
+        - needs_developer_mode
+        - "'bluefin-dx' not in current_image"
+      register: rebase_result
+
+    - name: Set reboot flag if rebase occurred
+      set_fact:
+        needs_reboot: true
+      when: rebase_result is changed
+
+    - name: Add user to docker group if on bluefin-dx
+      user:
+        name: "{{ config.username }}"
+        groups: docker
+        append: yes
+      when: 
+        - needs_developer_mode
+        - "'bluefin-dx' in current_image or rebase_result is changed"
+
+    # ===== TAILSCALE SETUP =====
+    - name: Setup Tailscale if enabled and key provided
+      block:
+        - name: Start Tailscale service
+          systemd:
+            name: tailscaled
+            enabled: yes
+            state: started
+
+        - name: Configure Tailscale with auth key
+          command: tailscale up --authkey="{{ config.tailscale_key }}" --accept-routes --accept-dns=false
+          when: config.tailscale_key != ""
+          register: tailscale_result
+          failed_when: false
+
+        - name: Display Tailscale status
+          debug:
+            msg: "Tailscale configured successfully"
+          when: tailscale_result.rc == 0
+
+      when: 
+        - config.enable_tailscale | default(false) | bool
+        - config.tailscale_key is defined
+        - config.tailscale_key != ""
+
+    - name: Disable Tailscale if not requested
+      block:
+        - name: Stop Tailscale service
+          systemd:
+            name: tailscaled
+            enabled: no
+            state: stopped
+          failed_when: false
+
+      when: not (config.enable_tailscale | default(false) | bool)
+
+    # ===== DOCKER SETUP (Bluefin-dx specific) =====
+    - name: Configure Docker if developer mode enabled
+      block:
+        - name: Enable Docker service
+          systemd:
+            name: docker
+            enabled: yes
+            state: started
+
+        - name: Wait for Docker to be ready
+          wait_for:
+            path: /var/run/docker.sock
+            timeout: 60
+
+        - name: Verify Docker is working
+          command: docker info
+          register: docker_info
+          failed_when: false
+
+        - name: Display Docker status
+          debug:
+            msg: "Docker is {{ 'working' if docker_info.rc == 0 else 'not working properly' }}"
+
+      when: needs_developer_mode
+
+    # ===== PHASE COMPLETION =====
+    - name: Create homelab config directory
+      file:
+        path: "/var/home/{{ config.username }}/.config/homelab"
+        state: directory
+        owner: "{{ config.username }}"
+        group: "{{ config.username }}"
+        mode: '0755'
+
+    - name: Mark Phase 1 as complete
+      copy:
+        content: "phase1_complete"
+        dest: "/var/home/{{ config.username }}/.config/homelab/current-phase"
+        owner: "{{ config.username }}"
+        group: "{{ config.username }}"
+
+    - name: Disable Phase 1 service
+      systemd:
+        name: homelab-phase1.service
+        enabled: no
+        scope: user
+      become_user: "{{ config.username }}"
+      environment:
+        XDG_RUNTIME_DIR: "/run/user/1000"
+
+    - name: Enable Phase 2 service
+      systemd:
+        name: homelab-phase2.service
+        enabled: yes
+        scope: user
+      become_user: "{{ config.username }}"
+      environment:
+        XDG_RUNTIME_DIR: "/run/user/1000"
+
+    # ===== REBOOT HANDLING =====
+    - name: Reboot system if needed for bluefin-dx
+      reboot:
+        msg: "Rebooting to complete bluefin-dx rebase"
+        reboot_timeout: 300
+      when: needs_reboot | default(false)
+
+    - name: Wait for system to come back online
+      wait_for_connection:
+        delay: 30
+        timeout: 300
+      when: needs_reboot | default(false)
+
+    - name: Final status message
+      debug:
+        msg: |
+          Phase 1 complete!
+          - Developer mode: {{ 'enabled' if needs_developer_mode else 'disabled' }}
+          - Tailscale: {{ 'enabled' if config.enable_tailscale | default(false) else 'disabled' }}
+          - System ready for Phase 2

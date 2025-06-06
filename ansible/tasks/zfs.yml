@@ -1,0 +1,163 @@
+# ansible/tasks/zfs.yml - ZFS management via Ansible (Bluefin-compatible)
+---
+- name: Check if ZFS is available
+  command: which zpool
+  register: zfs_check
+  failed_when: false
+  changed_when: false
+
+- name: Fail if ZFS not available
+  fail:
+    msg: "ZFS not found - ensure you're running on Bluefin which includes ZFS"
+  when: zfs_check.rc != 0
+
+- name: Display ZFS version
+  command: zfs version
+  register: zfs_version
+  changed_when: false
+
+- name: Show ZFS version
+  debug:
+    msg: "ZFS version: {{ zfs_version.stdout_lines[0] }}"
+
+- name: Check if ZFS pool already exists
+  command: zpool list {{ pool_name }}
+  register: pool_check
+  failed_when: false
+  changed_when: false
+
+- name: Get available drives for ZFS (improved logic)
+  shell: |
+    # Get OS drive
+    OS_DRIVE=$(lsblk -no PKNAME $(findmnt -n -o SOURCE /) 2>/dev/null | head -1)
+    
+    # Find largest available drive
+    LARGEST_DRIVE=""
+    LARGEST_SIZE=0
+    
+    while IFS= read -r line; do
+        if [[ -n "$line" ]]; then
+            DRIVE=$(echo "$line" | awk '{print $1}')
+            SIZE_STR=$(echo "$line" | awk '{print $2}')
+            
+            # Convert size to bytes
+            SIZE_BYTES=$(echo "$SIZE_STR" | python3 -c "
+import sys, re
+size_str = sys.stdin.read().strip()
+match = re.match(r'([0-9.]+)([KMGT]?)', size_str.upper())
+if match:
+    num, unit = match.groups()
+    multipliers = {'': 1, 'K': 1024, 'M': 1024**2, 'G': 1024**3, 'T': 1024**4}
+    size_bytes = int(float(num) * multipliers.get(unit, 1))
+    print(size_bytes)
+else:
+    print(0)
+")
+            
+            # Check if this is larger and not the OS drive
+            if [[ "$SIZE_BYTES" -gt "$LARGEST_SIZE" && "$DRIVE" != "$OS_DRIVE" ]]; then
+                LARGEST_SIZE="$SIZE_BYTES"
+                LARGEST_DRIVE="/dev/$DRIVE"
+            fi
+        fi
+    done < <(lsblk -d -n -o NAME,SIZE,TYPE,MOUNTPOINT | awk '
+        $3=="disk" && 
+        $4=="" && 
+        $1!~/^loop/ && 
+        $1!~/^ram/ && 
+        $1!~/^sr/ 
+        {print $1 " " $2}
+    ')
+    
+    echo "$LARGEST_DRIVE"
+  register: largest_drive
+  when: pool_check.rc != 0
+
+- name: Display selected drive
+  debug:
+    msg: "Selected drive for ZFS: {{ largest_drive.stdout }}"
+  when: pool_check.rc != 0 and largest_drive.stdout != ""
+
+- name: Fail if no suitable drive found
+  fail:
+    msg: "No suitable drive found for ZFS pool. Need at least one unused drive."
+  when: 
+    - pool_check.rc != 0
+    - largest_drive.stdout == ""
+
+- name: Create ZFS pool with optimal settings for media
+  command: >
+    zpool create -f
+    -o ashift=12
+    -o autoexpand=on
+    -o autotrim=on
+    -o cachefile=none
+    -O compression=lz4
+    -O atime=off
+    -O xattr=sa
+    -O acltype=posixacl
+    -O recordsize=1M
+    -O canmount=off
+    -m /{{ pool_name }}
+    {{ pool_name }} {{ largest_drive.stdout }}
+  when: 
+    - pool_check.rc != 0
+    - largest_drive.stdout != ""
+  register: zfs_pool_creation
+
+- name: Create ZFS datasets for media with optimized record sizes
+  command: >
+    zfs create 
+    -o recordsize={{ item.recordsize | default('1M') }}
+    -o compression={{ item.compression | default('lz4') }}
+    -o canmount=on
+    -o mountpoint={{ item.mountpoint | default('legacy') }}
+    {{ pool_name }}/{{ item.name }}
+  loop:
+    - { name: "shared", recordsize: "128K", mountpoint: "/{{ pool_name }}/shared" }
+    - { name: "media", mountpoint: "/{{ pool_name }}/media" }
+    - { name: "backups", compression: "gzip-9", mountpoint: "/{{ pool_name }}/backups" }
+    - { name: "media/books", recordsize: "64K", mountpoint: "/{{ pool_name }}/media/books" }
+    - { name: "media/comics", recordsize: "64K", mountpoint: "/{{ pool_name }}/media/comics" }
+    - { name: "media/movies", mountpoint: "/{{ pool_name }}/media/movies" }
+    - { name: "media/shows", mountpoint: "/{{ pool_name }}/media/shows" }
+    - { name: "media/xxx", mountpoint: "/{{ pool_name }}/media/xxx" }
+    - { name: "media/audiobooks", recordsize: "64K", mountpoint: "/{{ pool_name }}/media/audiobooks" }
+    - { name: "media/webvids", mountpoint: "/{{ pool_name }}/media/webvids" }
+    - { name: "media/music", recordsize: "64K", mountpoint: "/{{ pool_name }}/media/music" }
+    - { name: "media/downloads", mountpoint: "/{{ pool_name }}/media/downloads" }
+  when: pool_check.rc != 0 or zfs_pool_creation is changed
+
+- name: Create download subdirectories
+  file:
+    path: "/{{ pool_name }}/media/downloads/{{ item }}"
+    state: directory
+    owner: "1000"
+    group: "1000"
+    mode: '0755'
+  loop:
+    - incomplete
+    - complete
+
+- name: Set ZFS pool permissions recursively
+  file:
+    path: "/{{ pool_name }}"
+    state: directory
+    owner: "1000"
+    group: "1000"
+    mode: '0755'
+    recurse: yes
+
+- name: Configure additional ZFS properties
+  command: zfs set {{ item.property }}={{ item.value }} {{ pool_name }}
+  loop:
+    - { property: "snapdir", value: "visible" }
+    - { property: "relatime", value: "on" }
+    - { property: "compression", value: "lz4" }
+
+- name: Set fact that ZFS pool was created
+  set_fact:
+    zfs_pool_created: true
+
+- name: Setup ZFS snapshots
+  include_tasks: zfs_snapshots.yml
